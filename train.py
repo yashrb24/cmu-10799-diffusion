@@ -206,7 +206,9 @@ def generate_samples(
     config: dict,
     ema: Optional[EMA] = None,
     current_step: Optional[int] = None,
-    # TODO: add/delete your arguments here
+    use_amp: bool = False,
+    amp_dtype: torch.dtype = torch.float32,
+    device_type: str = 'cuda',
     **sampling_kwargs,
 ) -> torch.Tensor:
     """
@@ -237,8 +239,14 @@ def generate_samples(
     if use_ema:
         ema.apply_shadow()
 
-    samples = None
-    # TODO: sample with your method.sample()
+    num_steps = config.get('sampling', {}).get('num_steps', config.get('ddpm', {}).get('num_timesteps', 1000))
+    with torch.no_grad(), autocast(device_type, dtype=amp_dtype, enabled=use_amp):
+        samples = method.sample(
+            batch_size=num_samples,
+            image_shape=image_shape,
+            num_steps=num_steps,
+            **sampling_kwargs,
+        )
 
     if use_ema:
         ema.restore()
@@ -260,8 +268,9 @@ def save_samples(
         save_path: File path to save the image grid.
         num_samples: Number of samples, used to calculate grid layout.
     """
-
-    raise NotImplementedError
+    samples = unnormalize(samples)
+    nrow = int(math.ceil(math.sqrt(num_samples)))
+    save_image(samples, save_path, nrow=nrow)
 
 
 def train(
@@ -409,7 +418,14 @@ def train(
     # Create gradient scaler for mixed precision
     # Determine device type for GradScaler (cuda or cpu)
     device_type = 'cuda' if device.type == 'cuda' else 'cpu'
-    scaler = GradScaler(device_type, enabled=config['infrastructure']['mixed_precision'])
+    use_amp = config['infrastructure']['mixed_precision']
+    if use_amp and device.type == 'cuda' and torch.cuda.is_bf16_supported():
+        amp_dtype = torch.bfloat16
+        use_scaler = False  # not needed for bf16
+    else:
+        amp_dtype = torch.float16
+        use_scaler = use_amp
+    scaler = GradScaler(device_type, enabled=use_scaler)
 
     # Setup logging
     log_dir = None
@@ -525,7 +541,7 @@ def train(
         # Forward pass with mixed precision
         optimizer.zero_grad()
         
-        with autocast(device_type, enabled=config['infrastructure']['mixed_precision']):
+        with autocast(device_type, dtype=amp_dtype, enabled=use_amp):
             loss, metrics = method.compute_loss(batch)
         
         # Backward pass
@@ -534,7 +550,8 @@ def train(
         # Gradient clipping
         if gradient_clip_norm > 0:
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
+            metrics['grad_norm'] = grad_norm.item()
         
         # Optimizer step
         scaler.step(optimizer)
@@ -603,6 +620,9 @@ def train(
                     config,
                     ema,
                     current_step=step + 1,
+                    use_amp=use_amp,
+                    amp_dtype=amp_dtype,
+                    device_type=device_type,
                 )
                 sample_path = os.path.join(log_dir, 'samples', f'samples_{step + 1:07d}.png')
                 save_samples(samples, sample_path, num_samples)

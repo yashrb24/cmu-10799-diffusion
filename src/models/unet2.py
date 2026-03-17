@@ -99,53 +99,67 @@ class UNet(nn.Module):
             in_channels=in_channels, out_channels=first_channel, kernel_size=3, padding=1
         )
 
-        self.encoder_levels = nn.ModuleList()
+        self.encoder_blocks = nn.ModuleList()
         self.downsamples = nn.ModuleList()
+        self.skip_channels = []
 
-        in_ch = first_channel
+        prev_ch = first_channel
         curr_resolution = 64
 
         for level_idx, mult in enumerate(channel_mult):
-            out_ch = base_channels * mult
-            level_blocks = nn.ModuleList()
+            ch = base_channels * mult
+            level = nn.ModuleList()
 
-            for _ in range(num_res_blocks):
-                block = nn.ModuleList(
-                    [
-                        ResBlock(
-                            in_channels=in_ch,
-                            out_channels=out_ch,
-                            time_embed_dim=time_embed_dim,
-                            dropout=dropout,
-                            use_scale_shift_norm=use_scale_shift_norm,
-                        )
-                    ]
+            level.append(
+                ResBlock(
+                    in_channels=prev_ch,
+                    out_channels=ch,
+                    time_embed_dim=time_embed_dim,
+                    dropout=dropout,
+                    use_scale_shift_norm=use_scale_shift_norm,
+                )
+            )
+            if curr_resolution in attention_resolutions:
+                level.append(AttentionBlock(channels=ch, num_heads=num_heads))
+            
+
+            for _ in range(num_res_blocks - 1):
+                level.append(
+                    ResBlock(
+                        in_channels=ch,
+                        out_channels=ch,
+                        time_embed_dim=time_embed_dim,
+                        dropout=dropout,
+                        use_scale_shift_norm=use_scale_shift_norm,
+                    )
                 )
                 if curr_resolution in attention_resolutions:
-                    block.append(AttentionBlock(channels=out_ch, num_heads=num_heads))
+                    level.append(AttentionBlock(channels=ch, num_heads=num_heads))
+                
+            self.skip_channels.append(ch)
+            self.encoder_blocks.append(level)
 
-                level_blocks.append(block)
-                in_ch = out_ch
-
-            self.encoder_levels.append(level_blocks)
-
-            if level_idx < self.num_levels - 1:
-                self.downsamples.append(Downsample(channels=out_ch))
+            if level_idx != len(channel_mult) - 1:
+                self.downsamples.append(Downsample(channels=ch))
                 curr_resolution //= 2
+            else:
+                self.downsamples.append(None)
+
+            prev_ch = ch
 
         self.bottleneck_layer = nn.ModuleList(
             [
                 ResBlock(
-                    in_channels=in_ch,
-                    out_channels=in_ch,
+                    in_channels=prev_ch,
+                    out_channels=prev_ch,
                     time_embed_dim=time_embed_dim,
                     dropout=dropout,
                     use_scale_shift_norm=use_scale_shift_norm,
                 ),
-                AttentionBlock(channels=in_ch, num_heads=num_heads),
+                AttentionBlock(channels=prev_ch, num_heads=num_heads),
                 ResBlock(
-                    in_channels=in_ch,
-                    out_channels=in_ch,
+                    in_channels=prev_ch,
+                    out_channels=prev_ch,
                     time_embed_dim=time_embed_dim,
                     dropout=dropout,
                     use_scale_shift_norm=use_scale_shift_norm,
@@ -153,50 +167,49 @@ class UNet(nn.Module):
             ]
         )
 
-        skip_channels = [first_channel]  # skip connection for init_conv
-        for level_idx, mult in enumerate(channel_mult):
-            out_ch = base_channels * mult
-            for _ in range(num_res_blocks):
-                skip_channels.append(out_ch)
-
-            if (
-                level_idx < len(channel_mult) - 1
-            ):  # last level does not have downsample, so we dont add a skip there
-                skip_channels.append(out_ch)
-
-        self.decoder_levels = nn.ModuleList()
+        self.decoder_blocks = nn.ModuleList()
         self.upsamples = nn.ModuleList()
+        for level_idx, (curr_mult, prev_mult) in reversed(
+            list(enumerate(zip(channel_mult[1:], channel_mult[0:])))
+        ):
+            ch = base_channels * curr_mult
+            prev_ch = base_channels * prev_mult
 
-        for level_idx, mult in reversed(list(enumerate(channel_mult))):
-            out_ch = base_channels * mult
-            level_blocks = nn.ModuleList()
+            self.upsamples.append(Upsample(channels=ch))
+            curr_resolution *= 2
 
-            for _ in range(num_res_blocks + 1):
-                skip_ch = skip_channels.pop()
-                block = nn.ModuleList(
-                    [
-                        ResBlock(
-                            in_channels=in_ch + skip_ch,
-                            out_channels=out_ch,
-                            time_embed_dim=time_embed_dim,
-                            dropout=dropout,
-                            use_scale_shift_norm=use_scale_shift_norm,
-                        )
-                    ]
+            level = nn.ModuleList()
+            level.append(
+                ResBlock(
+                    in_channels=ch + self.skip_channels[level_idx],
+                    out_channels=prev_ch,
+                    time_embed_dim=time_embed_dim,
+                    dropout=dropout,
+                    use_scale_shift_norm=use_scale_shift_norm,
+                )
+            )
+            if curr_resolution in attention_resolutions:
+                level.append(AttentionBlock(channels=prev_ch))
+
+            for _ in range(num_res_blocks - 1):
+                level.append(
+                    ResBlock(
+                        in_channels=prev_ch, 
+                        out_channels=prev_ch,
+                        time_embed_dim=time_embed_dim,
+                        dropout=dropout,
+                        use_scale_shift_norm=use_scale_shift_norm,
+                    )
                 )
                 if curr_resolution in attention_resolutions:
-                    block.append(AttentionBlock(channels=out_ch, num_heads=num_heads))
-                level_blocks.append(block)
-                in_ch = out_ch
+                    level.append(AttentionBlock(channels=prev_ch))
 
-            self.decoder_levels.append(level_blocks)
+            self.decoder_blocks.append(level)
 
-            if level_idx > 0:
-                self.upsamples.append(Upsample(channels=out_ch))
-                curr_resolution *= 2
 
         self.norm_activation = nn.Sequential(
-            GroupNorm32(num_groups=32, num_channels=first_channel), nn.SiLU()
+            GroupNorm32(num_groups=32, num_channels=first_channel),
+            nn.SiLU()
         )
 
         self.final_conv = nn.Conv2d(
@@ -207,42 +220,34 @@ class UNet(nn.Module):
         t_emb = self.timestep_embedding(t)
         h = self.initial_conv(x)
 
-        # forward through encoder
-        skips = [h]
-        for level_idx, level_blocks in enumerate(self.encoder_levels):
-            for block in level_blocks:
-                h = self.__block_aware_forward(block=block, x=h, t=t_emb)
+        skips = []
+        for level, downsample in zip(self.encoder_blocks, self.downsamples):
+            for block in level:
+                h = self.__forward_helper(block, h, t_emb)
+
+            if downsample is not None:
                 skips.append(h)
+                h = downsample(h)
 
-            if level_idx < self.num_levels - 1:
-                h = self.downsamples[level_idx](h)
-                skips.append(h)
+        for block in self.bottleneck_layer:
+            h = self.__forward_helper(block, h, t_emb)
 
-        # forward through bottleneck
-        h = self.bottleneck_layer[0](h, t_emb)
-        h = self.bottleneck_layer[1](h)
-        h = self.bottleneck_layer[2](h, t_emb)
-
-        # forward through decoder
-        for level_idx, level_blocks in enumerate(self.decoder_levels):
-            for block in level_blocks:
-                skip_connection = skips.pop()
-                h = torch.cat([h, skip_connection], dim=1)
-                h = self.__block_aware_forward(block=block, x=h, t=t_emb)
-
-            if level_idx < len(self.upsamples):
-                h = self.upsamples[level_idx](h)
+        for level, upsample in zip(self.decoder_blocks, self.upsamples):
+            h = upsample(h)
+            skip = skips.pop()
+            h = torch.cat([h, skip], dim=1)
+            for block in level:
+                h = self.__forward_helper(block, h, t_emb)
 
         h = self.norm_activation(h)
         h = self.final_conv(h)
-
         return h
 
-    def __block_aware_forward(self, block: nn.Module, x: torch.Tensor, t: torch.Tensor):
-        z = block[0](x, t)  # ResBlock
-        if len(block) > 1:
-            z = block[1](z)  # AttentionBlock
-        return z
+    def __forward_helper(self, block: nn.Module, x: torch.Tensor, t: torch.Tensor):
+        if isinstance(block, ResBlock):
+            return block(x, t)
+        else:
+            return block(x)
 
 
 def create_model_from_config(config: dict) -> UNet:

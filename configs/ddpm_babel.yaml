@@ -1,54 +1,55 @@
 data:
   dataset: "celeba"
-  root: # Your dataset path
+  root: "/home/pfs/yash/cmu-10799-diffusion/data/celeba-subset" # Your dataset path
   from_hub: false  # run "python download_dataset.py --output_dir YOUR_PATH" first if you want to use false here
   repo_name: "electronickale/cmu-10799-celeba64-subset"
   image_size: 64
   channels: 3
-  num_workers: 4
+  num_workers: 8 
   pin_memory: true
-  augment: true
+  augment: false
 
 # TODO: build your model architecture, feel free to add or exclude any of these options
 model:
-  base_channels: # int
-  channel_mult: # list of int [1, 2, 2, 4]
-  num_res_blocks: # TODO
-  attention_resolutions: # list of int
-  num_heads: # int
-  dropout: # float
-  use_scale_shift_norm: # bool
+  base_channels: 64 # int
+  channel_mult: [1, 2, 2, 4] # list of int [1, 2, 2, 4]
+  num_res_blocks: 2 # TODO
+  attention_resolutions: [16, 8] # list of int
+  num_heads: 4 # int
+  dropout: 0.0 # float 
+  use_scale_shift_norm: true # bool
 
 # TODO: your training hyperparameters, feel free to add or exclude any of these options
 training:
-  batch_size: # int
-  learning_rate: # float
-  weight_decay: # float
-  betas: # list of float
-  ema_decay: # float
-  ema_start: # int # This is the start iter to use EMA during sampling at training time, as using EMA at the beginning may not be very meaningful
-  gradient_clip_norm: # float
-  num_iterations: # int
-  log_every: # int
-  sample_every: # int
-  save_every: # int
-  num_samples: # int
+  batch_size: 256 # int
+  learning_rate: 0.0005 # float
+  weight_decay: 0.0 # float
+  betas: [0.9, 0.999] # list of float
+  ema_decay: 0.999 
+  ema_start: 1000 # int # This is the start iter to use EMA during sampling at training time, as using EMA at the beginning may not be very meaningful
+  gradient_clip_norm: 10.0 # float
+  num_iterations: 50000 # int
+  log_every: 10 # int
+  sample_every: 1000 # int
+  save_every: 10000 # int
+  num_samples: 64 # int
 
 # TODO: your ddpm algorithm hyperparameters, feel free to add or exclude any of these options
 ddpm:
-  num_timesteps: # int
-  beta_start: # float
-  beta_end: # float
+  num_timesteps: 1000 # int
+  beta_start: 0.0001 # float
+  beta_end: 0.02 # float
+  parametrization: "epsilon"
 
 sampling:
-  num_steps: # int
+  num_steps: 1000 # int
   sampler: "ddpm" # for the first hw we only need ddpm sampling, this is a placeholder where you can add more options yourself later
 
 infrastructure:
-  seed: 42
+  seed: 42 
   device: "cuda"
-  num_gpus: # int # 1 should be ok
-  mixed_precision: # bool # both true and false should work
+  num_gpus: 2 # int # 1 should be ok
+  mixed_precision: true # bool # both true and false should work
   compile_model: false # only tested false
 
 checkpoint:
@@ -60,4 +61,4 @@ logging:
   wandb:
     enabled: true
     project: "cmu-10799-diffusion"
-    entity: null
+    entity: "yashrb"

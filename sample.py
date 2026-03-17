@@ -24,15 +24,17 @@ What you need to implement:
 
 import os
 import sys
+import math
 import argparse
 from datetime import datetime
 
 import yaml
 import torch
+from torch.amp import autocast
 from tqdm import tqdm
 
 from src.models import create_model_from_config
-from src.data import save_image
+from src.data import save_image, unnormalize
 from src.methods import DDPM
 from src.utils import EMA
 
@@ -66,8 +68,9 @@ def save_samples(
         save_path: File path to save the image grid.
         num_samples: Number of samples, used to calculate grid layout.
     """
-
-    raise NotImplementedError
+    samples = unnormalize(samples)
+    nrow = int(math.ceil(math.sqrt(num_samples)))
+    save_image(samples, save_path, nrow=nrow)
 
 
 def main():
@@ -146,7 +149,12 @@ def main():
     if not args.grid:
         os.makedirs(args.output_dir, exist_ok=True)
 
-    with torch.no_grad():
+    # Mixed precision inference (matches train.py)
+    use_amp = config.get('infrastructure', {}).get('mixed_precision', False)
+    device_type = 'cuda' if 'cuda' in args.device else 'cpu'
+    amp_dtype = torch.float16
+
+    with torch.no_grad(), autocast(device_type, dtype=amp_dtype, enabled=use_amp):
         pbar = tqdm(total=args.num_samples, desc="Generating samples")
         while remaining > 0:
             batch_size = min(args.batch_size, remaining)
@@ -166,7 +174,7 @@ def main():
             else:
                 for i in range(samples.shape[0]):
                     img_path = os.path.join(args.output_dir, f"{sample_idx:06d}.png")
-                    save_samples(samples, img_path, 1)
+                    save_samples(samples[i:i+1], img_path, 1)
                     sample_idx += 1
 
             remaining -= batch_size
@@ -183,7 +191,7 @@ def main():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             args.output = f"samples_{timestamp}.png"
 
-        save_samples(all_samples, args.output, nrow=8)
+        save_samples(all_samples, args.output, args.num_samples)
         print(f"Saved grid to {args.output}")
     else:
         print(f"Saved {args.num_samples} individual images to {args.output_dir}")

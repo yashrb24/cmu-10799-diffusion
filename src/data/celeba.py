@@ -22,6 +22,8 @@ from torchvision.utils import make_grid as torch_make_grid
 from torchvision.utils import save_image as torch_save_image
 from PIL import Image
 
+# my imports
+from torchvision.transforms import v2
 
 class CelebADataset(Dataset):
     """
@@ -243,7 +245,19 @@ class CelebADataset(Dataset):
         # if self.augment and self.split == "train":
         #     transform_list.append(...)
 
-        return transforms.Compose(transform_list)
+        if self.augment and self.split == "train":
+            transform_list.append(v2.RandomHorizontalFlip(p=0.5))
+
+        image_to_tensor_transform = v2.Compose([
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True), # Scales to [0, 1]
+            # (input - 0.5) / 0.5  =>  2 * input - 1  =>  Range [-1, 1]
+            v2.Normalize(mean=[0.5], std=[0.5]) 
+        ])
+    
+        transform_list.append(image_to_tensor_transform)
+
+        return v2.Compose(transform_list)
 
     def __len__(self) -> int:
         return len(self.data)

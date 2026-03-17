@@ -128,7 +128,9 @@ class ResBlock(nn.Module):
         self.norm2 = GroupNorm32(32, out_channels)
         self.dropout = nn.Dropout(dropout)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        
+        nn.init.zeros_(self.conv2.weight)
+        nn.init.zeros_(self.conv2.bias)
+
         # Residual connection
         if in_channels != out_channels:
             self.skip_connection = nn.Conv2d(in_channels, out_channels, kernel_size=1)
@@ -207,10 +209,9 @@ class AttentionBlock(nn.Module):
         
         # Output projection
         self.proj_out = nn.Conv2d(channels, channels, kernel_size=1)
-        
-        # Scale factor for dot-product attention
-        self.scale = self.head_dim ** -0.5
-    
+        nn.init.zeros_(self.proj_out.weight)
+        nn.init.zeros_(self.proj_out.bias)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -230,12 +231,8 @@ class AttentionBlock(nn.Module):
                        three=3, heads=self.num_heads, head_dim=self.head_dim)
         q, k, v = qkv[0], qkv[1], qkv[2]
         
-        # Attention: softmax(Q @ K^T / sqrt(d)) @ V
-        attn = torch.einsum('bhid,bhjd->bhij', q, k) * self.scale
-        attn = F.softmax(attn, dim=-1)
-        
-        # Apply attention to values
-        out = torch.einsum('bhij,bhjd->bhid', attn, v)
+        # Attention via fused scaled dot-product (numerically stable in fp16)
+        out = F.scaled_dot_product_attention(q, k, v)
         
         # Reshape back to spatial dimensions
         out = rearrange(out, 'b heads (h w) head_dim -> b (heads head_dim) h w',

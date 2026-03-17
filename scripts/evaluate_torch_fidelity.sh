@@ -20,7 +20,7 @@ CHECKPOINT="YOUR_PATH"
 DATASET_PATH="data/celeba"
 METRICS="kid"
 NUM_SAMPLES=1000
-BATCH_SIZE=256
+BATCH_SIZE=512
 NUM_STEPS=1000
 GENERATED_DIR=""  # Will be set based on checkpoint location
 CACHE_DIR=""      # Will be set based on checkpoint location
@@ -81,8 +81,7 @@ echo ""
 echo "[2/2] Computing metrics..."
 mkdir -p "$CACHE_DIR"
 
-FIDELITY_CMD="fidelity --gpu 0 --batch-size $BATCH_SIZE --cache-root $CACHE_DIR \
-    --input1 $GENERATED_DIR --input2 $DATASET_PATH"
+FIDELITY_CMD="fidelity --gpu 0 --batch-size $BATCH_SIZE --cache-root $CACHE_DIR --input1 $GENERATED_DIR --input2 $DATASET_PATH"
 
 [[ "$METRICS" == *"fid"* ]] && FIDELITY_CMD="$FIDELITY_CMD --fid"
 [[ "$METRICS" == *"kid"* ]] && FIDELITY_CMD="$FIDELITY_CMD --kid"
