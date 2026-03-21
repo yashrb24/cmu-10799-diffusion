@@ -22,7 +22,7 @@ class DDPM(BaseMethod):
         beta_start: float,
         beta_end: float,
         # TODO: Add your own arguments here
-        parametrization: Literal["epsilon", "x0"],
+        parametrization: Literal["epsilon", "x0"] = 'epsilon',
     ):
         super().__init__(model, device)
 
@@ -68,7 +68,12 @@ class DDPM(BaseMethod):
         x0_coeff_xt = sqrt_alpha_t * (1 - alpha_bar_t_minus_one) / (1 - alpha_bar_t)
         x0_coeff_pred = beta_t * torch.sqrt(alpha_bar_t_minus_one) / (1 - alpha_bar_t)
 
-        # Forward process buffers
+        # Noise schedule fundamentals (shared by DDPM and DDIM)
+        super().register_buffer("beta_t", beta_t)
+        super().register_buffer("alpha_t", alpha_t)
+        super().register_buffer("alpha_bar_t", alpha_bar_t)
+        super().register_buffer("alpha_bar_t_minus_one", alpha_bar_t_minus_one)
+        super().register_buffer("sqrt_alpha_t", sqrt_alpha_t)
         super().register_buffer("sqrt_alpha_bar_t", sqrt_alpha_bar_t)
         super().register_buffer("sqrt_one_minus_alpha_bar_t", sqrt_one_minus_alpha_bar_t)
         # Reverse process buffers
@@ -77,6 +82,14 @@ class DDPM(BaseMethod):
         super().register_buffer("eps_coeff_pred", eps_coeff_pred)
         super().register_buffer("x0_coeff_xt", x0_coeff_xt)
         super().register_buffer("x0_coeff_pred", x0_coeff_pred)
+
+        # DDPM reverse process coefficients
+        super().register_buffer("ddpm_posterior_variance", beta_tilde_t)
+        super().register_buffer("ddpm_posterior_std", sqrt_beta_tilde_t)
+        super().register_buffer("ddpm_eps_coeff_xt", eps_coeff_xt)
+        super().register_buffer("ddpm_eps_coeff_pred", eps_coeff_pred)
+        super().register_buffer("ddpm_x0_coeff_xt", x0_coeff_xt)
+        super().register_buffer("ddpm_x0_coeff_pred", x0_coeff_pred)
 
     # =========================================================================
     # Forward process
@@ -137,37 +150,63 @@ class DDPM(BaseMethod):
     # =========================================================================
 
     @torch.no_grad()
-    def reverse_process(self, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def reverse_process(
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        sampler: str = "ddpm",
+        t_prev: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
-        TODO: Implement one step of the DDPM reverse process
+        One step of the reverse process, dispatching on the sampler type.
 
         Args:
             x_t: Noisy samples at time t (batch_size, channels, height, width)
-            t: the time
-            **kwargs: Additional method-specific arguments
+            t: Current timestep
+            sampler: 'ddpm' or 'ddim'
+            t_prev: Previous timestep in the subsequence (needed by DDIM)
 
         Returns:
-            x_prev: Noisy samples at time t-1 (batch_size, channels, height, width)
+            x_prev: Denoised samples at the previous timestep
         """
         prediction = self.model.forward(x_t, t)
-        sigma_t = self.__gather(self.sqrt_beta_tilde_t, t)
-        z = torch.randn_like(x_t) * (t != 0).float().reshape(
-            -1, 1, 1, 1
-        )  # reshaping to align with B, C, H, W
 
-        if self.parametrization == "epsilon":
-            mu = (
-                self.__gather(self.eps_coeff_xt, t) * x_t
-                + self.__gather(self.eps_coeff_pred, t) * prediction
+        if sampler == "ddpm":
+            sigma_t = self.__gather(self.ddpm_posterior_std, t)
+            z = torch.randn_like(x_t) * (t != 0).float().reshape(
+                -1, 1, 1, 1
+            )  # reshaping to align with B, C, H, W
+
+            if self.parametrization == "epsilon":
+                mu = (
+                    self.__gather(self.ddpm_eps_coeff_xt, t) * x_t
+                    + self.__gather(self.ddpm_eps_coeff_pred, t) * prediction
+                )
+            else:
+                mu = (
+                    self.__gather(self.ddpm_x0_coeff_xt, t) * x_t
+                    + self.__gather(self.ddpm_x0_coeff_pred, t) * prediction
+                )
+            x_prev = mu + sigma_t * z
+
+        elif sampler == "ddim":
+            # TODO: Implement DDIM reverse step here.
+            # Use self.alpha_bar_t looked up at t and t_prev to compute
+            # the DDIM update. Coefficients must be computed on the fly
+            # because t_prev depends on the timestep subsequence.
+            x_0_hat = (x_t - self.__gather(
+                self.sqrt_one_minus_alpha_bar_t, t
+            ) * prediction) / self.__gather(self.sqrt_alpha_bar_t, t)
+            x_0_hat = x_0_hat.clip(-1, 1)
+            x_prev = (
+                self.__gather(self.sqrt_alpha_bar_t, t_prev) * x_0_hat
+                + self.__gather(self.sqrt_one_minus_alpha_bar_t, t_prev) * prediction
             )
+
         else:
-            mu = (
-                self.__gather(self.x0_coeff_xt, t) * x_t
-                + self.__gather(self.x0_coeff_pred, t) * prediction
-            )
-        x_t_minus_1 = mu + sigma_t * z
+            raise ValueError(f"Unknown sampler: {sampler}")
 
-        return x_t_minus_1
+        return x_prev
 
     @torch.no_grad()
     def sample(
@@ -175,6 +214,7 @@ class DDPM(BaseMethod):
         batch_size: int,
         image_shape: Tuple[int, int, int],
         num_steps: Optional[int] = None,
+        sampler: str = "ddpm",
         **kwargs,
     ) -> torch.Tensor:
         """
@@ -199,9 +239,17 @@ class DDPM(BaseMethod):
         else:
             timesteps = torch.arange(self.num_timesteps - 1, -1, -1)
 
-        for timestep in timesteps:
+        for i, timestep in enumerate(timesteps):
             t = timestep * torch.ones(size=(batch_size,), device=self.device, dtype=torch.int64)
-            x_t = self.reverse_process(x_t, t)
+            # t_prev is the next timestep in the list or 0 at the end
+            if i + 1 < len(timesteps):
+                t_prev_val = timesteps[i + 1]
+            else:
+                t_prev_val = torch.tensor(0, dtype=torch.long)
+            t_prev = t_prev_val * torch.ones(
+                size=(batch_size,), device=self.device, dtype=torch.int64
+            )
+            x_t = self.reverse_process(x_t, t, sampler=sampler, t_prev=t_prev)
         x_t = x_t.clamp(-1, 1)
         self.train_mode()
         return x_t
@@ -231,5 +279,5 @@ class DDPM(BaseMethod):
             beta_start=ddpm_config["beta_start"],
             beta_end=ddpm_config["beta_end"],
             # TODO: add your parameters here
-            parametrization=ddpm_config["parametrization"],
+            # parametrization=ddpm_config["parametrization"],
         )

@@ -1,0 +1,58 @@
+data:
+  dataset: "celeba"
+  root: "/home/pfs/yash/cmu-10799-diffusion/data/celeba-subset" # Your dataset path
+  from_hub: false  # run "python download_dataset.py --output_dir YOUR_PATH" first if you want to use false here
+  repo_name: "electronickale/cmu-10799-celeba64-subset"
+  image_size: 64
+  channels: 3
+  num_workers: 8
+  pin_memory: true
+  augment: true
+
+model:
+  base_channels: 64
+  channel_mult: [1, 2, 2, 4]
+  num_res_blocks: 2
+  attention_resolutions: [16, 8]
+  num_heads: 4
+  dropout: 0.0
+  use_scale_shift_norm: true
+
+training:
+  batch_size: 256 
+  learning_rate: 0.0005
+  weight_decay: 0.0
+  betas: [0.9, 0.999]
+  ema_decay: 0.999
+  ema_start: 5000
+  gradient_clip_norm: 10.0
+  num_iterations: 50000
+  log_every: 10
+  sample_every: 1000
+  save_every: 10000
+  num_samples: 16
+
+flow_matching:
+  num_timesteps: 1000
+
+sampling:
+  num_steps: 1000
+  sampler: "flow_matching"
+
+infrastructure:
+  seed: 42
+  device: "cuda"
+  num_gpus: 2
+  mixed_precision: true
+  compile_model: false
+
+checkpoint:
+  dir: "./checkpoints"
+  resume: null
+
+logging:
+  dir: "./logs"
+  wandb:
+    enabled: wandb
+    project: "cmu-10799-diffusion"
+    entity: "yashrb"

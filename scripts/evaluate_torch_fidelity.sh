@@ -22,6 +22,7 @@ METRICS="kid"
 NUM_SAMPLES=1000
 BATCH_SIZE=512
 NUM_STEPS=1000
+SAMPLER="ddpm"
 GENERATED_DIR=""  # Will be set based on checkpoint location
 CACHE_DIR=""      # Will be set based on checkpoint location
 
@@ -35,6 +36,7 @@ while [[ $# -gt 0 ]]; do
         --num-samples) NUM_SAMPLES="$2"; shift 2 ;;
         --batch-size) BATCH_SIZE="$2"; shift 2 ;;
         --num-steps) NUM_STEPS="$2"; shift 2 ;;
+        --sampler) SAMPLER="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -56,6 +58,7 @@ echo "Checkpoint: $CHECKPOINT"
 echo "Method: $METHOD"
 echo "Dataset: $DATASET_PATH"
 echo "Metrics: $METRICS"
+echo "Sampler: $SAMPLER"
 echo "Num samples: $NUM_SAMPLES"
 echo "Output: $GENERATED_DIR"
 echo "=========================================="
@@ -70,7 +73,8 @@ SAMPLE_CMD="python sample.py \
     --method $METHOD \
     --output_dir $GENERATED_DIR \
     --num_samples $NUM_SAMPLES \
-    --batch_size $BATCH_SIZE"
+    --batch_size $BATCH_SIZE \
+    --sampler $SAMPLER"
 
 [ -n "$NUM_STEPS" ] && SAMPLE_CMD="$SAMPLE_CMD --num_steps $NUM_STEPS"
 
